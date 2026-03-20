@@ -574,16 +574,23 @@ h2 {
 }
 
 .image-preview-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-height: 0;
+  max-height: calc(100vh - 180px);
   overflow: auto;
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.03);
+  padding: 16px;
 }
 
 .image-preview-frame img {
   display: block;
-  width: 100%;
+  width: auto;
   height: auto;
+  max-width: 100%;
+  max-height: calc(100vh - 212px);
   object-fit: contain;
 }
 
