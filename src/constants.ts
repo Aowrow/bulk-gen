@@ -1,8 +1,8 @@
 import type { AspectRatio, GridCount, ProviderConfig, WorkspaceState } from './types';
 
-export const GRID_OPTIONS: GridCount[] = [2, 4, 6, 8, 9, 12, 16];
+export const GRID_OPTIONS: GridCount[] = [4, 9];
 
-export const ASPECT_RATIO_OPTIONS: AspectRatio[] = ['Auto', '1:1', '3:2', '2:3', '4:3', '3:4', '16:9', '9:16', '4:5', '5:4', '21:9'];
+export const ASPECT_RATIO_OPTIONS: AspectRatio[] = ['1:1', '3:2', '2:3', '4:3', '3:4', '16:9', '9:16'];
 
 export const DEFAULT_PROVIDER_CONFIG: ProviderConfig = {
   provider: 'gemini',

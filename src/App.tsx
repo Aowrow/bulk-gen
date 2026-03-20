@@ -64,7 +64,7 @@ function App() {
   const summaryCopy = useMemo(() => {
     const count = mode === 'solo' ? 1 : workspace.gridCount;
     const kind = mode === 'gacha' ? '变体' : '图片';
-    return `${mode === 'solo' ? '1 条提示词 -> 1 张图片' : `${count} 条提示词 -> ${count} 张${kind}`} | 画布 ${workspace.aspectRatio} | ${workspace.resolution}`;
+    return `${mode === 'solo' ? '1 条提示词 -> 1 张图片' : `${count} 条提示词 -> ${count} 张${kind}`} | 画布 ${workspace.aspectRatio}`;
   }, [mode, workspace]);
 
   const updateWorkspace = (updates: Partial<WorkspaceState>) => {
@@ -156,6 +156,8 @@ function App() {
 
     try {
       const generated = await generateImages({
+        mode,
+        gridCount: workspace.gridCount,
         prompts,
         payload: storyboardPayload,
         referenceImages,
@@ -399,7 +401,7 @@ function App() {
             <div className="section-heading">
               <div>
                 <p className="eyebrow">画布</p>
-                <h2>比例与分辨率</h2>
+                <h2>比例</h2>
               </div>
             </div>
 
@@ -413,6 +415,15 @@ function App() {
                   {ratio}
                 </button>
               ))}
+            </div>
+          </section>
+
+          <section className="glass-panel section-block">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">质量</p>
+                <h2>分辨率</h2>
+              </div>
             </div>
 
             <div className="option-grid resolution-grid">
