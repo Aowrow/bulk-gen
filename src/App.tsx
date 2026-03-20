@@ -3,6 +3,8 @@ import {
   Expand,
   ImagePlus,
   KeyRound,
+  LoaderCircle,
+  ListOrdered,
   RefreshCw,
   Settings2,
   Sparkles,
@@ -12,11 +14,12 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ASPECT_RATIO_OPTIONS, DEFAULT_PROVIDER_CONFIG, DEFAULT_WORKSPACE, GRID_OPTIONS, MODE_COPY } from './constants';
 import { generateImages } from './generation';
-import type { GeneratedImage, GridCount, Mode, ProviderConfig, UploadedImage, WorkspaceState } from './types';
+import type { GeneratedImage, GenerationTask, GridCount, Mode, ProviderConfig, UploadedImage, WorkspaceState } from './types';
 import {
   buildPromptList,
   buildStoryboardPayload,
   exportTextFile,
+  generateId,
   getCanvasColumns,
   getVisiblePromptCount,
   gridLabel,
@@ -30,19 +33,20 @@ import {
   validateWorkspace
 } from './utils';
 
+const MAX_CONCURRENT_TASKS = 3;
+
 function App() {
   const [providerConfig, setProviderConfig] = useState<ProviderConfig>(readProviderConfig);
   const [workspace, setWorkspace] = useState<WorkspaceState>(readWorkspaceState);
   const [referenceImages, setReferenceImages] = useState<UploadedImage[]>([]);
-  const [results, setResults] = useState<GeneratedImage[]>([]);
+  const [tasks, setTasks] = useState<GenerationTask[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [payloadPreview, setPayloadPreview] = useState<string>('');
   const [error, setError] = useState<string>('');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [progressText, setProgressText] = useState('');
   const [configOpen, setConfigOpen] = useState(false);
   const [previewImage, setPreviewImage] = useState<GeneratedImage | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const controllerMapRef = useRef<Map<string, AbortController>>(new Map());
 
   useEffect(() => {
     persistProviderConfig(providerConfig);
@@ -56,10 +60,116 @@ function App() {
   const visiblePromptCount = getVisiblePromptCount(mode, workspace.gridCount);
   const promptStatus = summarizePromptStatus(mode, workspace);
   const storyboardPayload = useMemo(() => buildStoryboardPayload(mode, workspace, referenceImages), [mode, workspace, referenceImages]);
+  const selectedTask = useMemo(
+    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
+    [tasks, selectedTaskId]
+  );
+  const runningTask = useMemo(
+    () => tasks.find((task) => task.status === 'running') ?? null,
+    [tasks]
+  );
+  const runningTasks = useMemo(
+    () => tasks.filter((task) => task.status === 'running'),
+    [tasks]
+  );
 
   useEffect(() => {
     setPayloadPreview(JSON.stringify(storyboardPayload, null, 2));
   }, [storyboardPayload]);
+
+  useEffect(() => {
+    const availableSlots = MAX_CONCURRENT_TASKS - runningTasks.length;
+    if (availableSlots <= 0) {
+      return;
+    }
+
+    const queuedTasks = tasks.filter((task) => task.status === 'queued').slice(0, availableSlots);
+    if (queuedTasks.length === 0) {
+      return;
+    }
+
+    setTasks((current) =>
+      current.map((task) =>
+        queuedTasks.some((queuedTask) => queuedTask.id === task.id)
+          ? {
+              ...task,
+              status: 'running',
+              progress: { current: 0, total: 1 }
+            }
+          : task
+      )
+    );
+
+    for (const nextTask of queuedTasks) {
+      if (controllerMapRef.current.has(nextTask.id)) {
+        continue;
+      }
+
+      const controller = new AbortController();
+      controllerMapRef.current.set(nextTask.id, controller);
+
+      void (async () => {
+        try {
+          const generated = await generateImages({
+            mode: nextTask.mode,
+            gridCount: nextTask.gridCount,
+            prompts: nextTask.prompts,
+            payload: nextTask.payload,
+            referenceImages,
+            providerConfig,
+            aspectRatio: nextTask.aspectRatio,
+            resolution: nextTask.resolution,
+            signal: controller.signal,
+            onProgress: (completed, total) => {
+              setTasks((current) =>
+                current.map((task) =>
+                  task.id === nextTask.id
+                    ? {
+                        ...task,
+                        progress: { current: completed, total }
+                      }
+                    : task
+                )
+              );
+            }
+          });
+
+          setTasks((current) =>
+            current.map((task) =>
+              task.id === nextTask.id
+                ? {
+                    ...task,
+                    status: generated.some((item) => item.status === 'error') ? 'failed' : 'completed',
+                    resultImages: generated,
+                    errorMessage: generated.length === 1 && generated[0].status === 'error' ? generated[0].errorMessage : undefined,
+                    progress: { current: generated.length, total: generated.length || 1 }
+                  }
+                : task
+            )
+          );
+        } catch (generationError) {
+          const isAbort = generationError instanceof Error && generationError.name === 'AbortError';
+          setTasks((current) =>
+            current.map((task) =>
+              task.id === nextTask.id
+                ? {
+                    ...task,
+                    status: isAbort ? 'cancelled' : 'failed',
+                    errorMessage: isAbort
+                      ? '任务已取消。'
+                      : generationError instanceof Error
+                        ? generationError.message
+                        : '生成失败。'
+                  }
+                : task
+            )
+          );
+        } finally {
+          controllerMapRef.current.delete(nextTask.id);
+        }
+      })();
+    }
+  }, [tasks, runningTasks.length, providerConfig, referenceImages]);
 
   const summaryCopy = useMemo(() => {
     const count = mode === 'solo' ? 1 : workspace.gridCount;
@@ -73,7 +183,6 @@ function App() {
 
   const handleModeChange = (nextMode: Mode) => {
     updateWorkspace({ mode: nextMode });
-    setResults([]);
     setError('');
   };
 
@@ -147,54 +256,66 @@ function App() {
     }
 
     setError('');
-    setIsGenerating(true);
-    setResults([]);
-    setProgressText(`准备生成 ${prompts.length} 张图片...`);
 
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+    const task: GenerationTask = {
+      id: generateId(),
+      createdAt: Date.now(),
+      status: runningTask ? 'queued' : 'queued',
+      mode,
+      gridCount: workspace.gridCount,
+      aspectRatio: workspace.aspectRatio,
+      resolution: workspace.resolution,
+      prompts,
+      payload: storyboardPayload,
+      progress: { current: 0, total: 1 },
+      resultImages: []
+    };
 
-    try {
-      const generated = await generateImages({
-        mode,
-        gridCount: workspace.gridCount,
-        prompts,
-        payload: storyboardPayload,
-        referenceImages,
-        providerConfig,
-        aspectRatio: workspace.aspectRatio,
-        resolution: workspace.resolution,
-        signal: controller.signal,
-        onProgress: (completed, total) => {
-          setProgressText(`正在生成：${completed}/${total}`);
-        }
-      });
-
-      setResults(generated);
-      setProgressText(`生成完成：${generated.filter((item) => item.status === 'success').length}/${generated.length}`);
-    } catch (generationError) {
-      if (generationError instanceof Error && generationError.name === 'AbortError') {
-        setProgressText('已取消生成。');
-      } else {
-        setError(generationError instanceof Error ? generationError.message : '生成失败。');
-      }
-    } finally {
-      setIsGenerating(false);
-      abortControllerRef.current = null;
-    }
+    setTasks((current) => [task, ...current]);
+    setSelectedTaskId(task.id);
   };
 
   const handleStop = () => {
-    abortControllerRef.current?.abort();
+    for (const controller of controllerMapRef.current.values()) {
+      controller.abort();
+    }
+  };
+
+  const handleCancelTask = (taskId: string) => {
+    const controller = controllerMapRef.current.get(taskId);
+    if (controller) {
+      controller.abort();
+      return;
+    }
+
+    setTasks((current) =>
+      current.map((task) =>
+        task.id === taskId && task.status === 'queued'
+          ? {
+              ...task,
+              status: 'cancelled',
+              errorMessage: '任务已取消。'
+            }
+          : task
+      )
+    );
+  };
+
+  const handleDeleteTask = (taskId: string) => {
+    setTasks((current) => {
+      const nextTasks = current.filter((task) => task.id !== taskId);
+      if (selectedTaskId === taskId) {
+        setSelectedTaskId(nextTasks[0]?.id ?? null);
+      }
+      return nextTasks;
+    });
   };
 
   const handleReset = () => {
     setWorkspace(DEFAULT_WORKSPACE);
     setProviderConfig(DEFAULT_PROVIDER_CONFIG);
     setReferenceImages([]);
-    setResults([]);
     setError('');
-    setProgressText('');
     setPayloadPreview(JSON.stringify(buildStoryboardPayload(DEFAULT_WORKSPACE.mode, DEFAULT_WORKSPACE, []), null, 2));
   };
 
@@ -218,8 +339,23 @@ function App() {
     document.body.removeChild(link);
   };
 
-  const currentResultCount = mode === 'solo' ? 1 : workspace.gridCount;
+  const currentResultCount = selectedTask ? (selectedTask.mode === 'solo' ? 1 : selectedTask.gridCount) : mode === 'solo' ? 1 : workspace.gridCount;
   const canvasColumns = getCanvasColumns(currentResultCount);
+  const resultImages = selectedTask?.resultImages ?? [];
+  const progressText = selectedTask
+    ? selectedTask.status === 'queued'
+      ? '等待执行中...'
+      : selectedTask.status === 'running'
+        ? `正在生成：${selectedTask.progress.current}/${selectedTask.progress.total}`
+        : selectedTask.status === 'completed'
+          ? `生成完成：${selectedTask.resultImages.length}/${selectedTask.resultImages.length}`
+          : selectedTask.status === 'cancelled'
+            ? '任务已取消'
+            : selectedTask.errorMessage ?? ''
+    : runningTask
+      ? '队列运行中'
+      : '';
+  const jsonPreview = selectedTask ? JSON.stringify(selectedTask.payload, null, 2) : payloadPreview;
 
   return (
     <div className="page-shell">
@@ -338,15 +474,14 @@ function App() {
           <button className="ghost-button" onClick={handleReset}>
             <RefreshCw size={18} /> 重置
           </button>
-          {isGenerating ? (
+          {runningTask && (
             <button className="primary-button danger-button" onClick={handleStop}>
-              <X size={18} /> 停止生成
-            </button>
-          ) : (
-            <button className="primary-button" onClick={handleGenerate}>
-              <Wand2 size={18} /> 开始生成
+              <X size={18} /> 停止全部
             </button>
           )}
+          <button className="primary-button" onClick={handleGenerate}>
+            <Wand2 size={18} /> 开始生成
+          </button>
         </div>
       </header>
 
@@ -487,7 +622,7 @@ function App() {
           <section className="glass-panel canvas-panel">
             <div className="canvas-summary">
               <div>
-                <p className="eyebrow">当前任务</p>
+                <p className="eyebrow">当前工作台</p>
                 <h2>{gridLabel(mode, workspace.gridCount)}</h2>
                 <p className="muted-copy">{summaryCopy}</p>
               </div>
@@ -562,11 +697,11 @@ function App() {
                 </div>
               </div>
 
-              {results.length === 0 ? (
-                <div className="empty-card large-empty">生成完成后，这里会按宫格展示图片结果。</div>
+              {resultImages.length === 0 ? (
+                <div className="empty-card large-empty">选择右侧任务可查看结果；新任务会进入队列顺序执行。</div>
               ) : (
                 <div className="result-grid" style={{ gridTemplateColumns: `repeat(${Math.min(canvasColumns, 4)}, minmax(0, 1fr))` }}>
-                  {results.map((item, index) => (
+                  {resultImages.map((item, index) => (
                     <article
                       key={item.id}
                       className={`result-card ${item.status === 'success' ? 'result-card--interactive' : ''}`}
@@ -621,12 +756,103 @@ function App() {
                   <h2>拼装 JSON</h2>
                 </div>
               </div>
-              <pre>{payloadPreview}</pre>
+              <pre>{jsonPreview}</pre>
             </section>
           </section>
 
           {error && <div className="error-banner">{error}</div>}
         </section>
+
+        <aside className="task-panel-column">
+          <section className="glass-panel task-panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Queue</p>
+                <h2>任务列表</h2>
+              </div>
+              <span className="task-count-badge">
+                <ListOrdered size={14} /> {tasks.length}
+              </span>
+            </div>
+
+            {tasks.length === 0 ? (
+              <div className="empty-card task-empty">提交生成后，这里会显示任务进度和全部产物。</div>
+            ) : (
+              <div className="task-list">
+                {tasks.map((task) => {
+                  const successCount = task.resultImages.filter((item) => item.status === 'success').length;
+                  const taskSummary = `${task.mode.toUpperCase()} · ${task.mode === 'solo' ? '1 张' : `${task.gridCount} 宫格`} · ${task.aspectRatio}`;
+                  const canCancel = task.status === 'queued' || task.status === 'running';
+                  const canDelete = task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled';
+                  return (
+                    <button
+                      key={task.id}
+                      className={`task-card ${selectedTaskId === task.id ? 'task-card--active' : ''}`}
+                      onClick={() => setSelectedTaskId(task.id)}
+                    >
+                      <div className="task-card__topline">
+                        <span className={`task-status task-status--${task.status}`}>{task.status}</span>
+                        <div className="task-card__actions">
+                          {task.status === 'running' && <LoaderCircle size={14} className="task-spin" />}
+                          {canCancel && (
+                            <span
+                              className="task-cancel-button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handleCancelTask(task.id);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  handleCancelTask(task.id);
+                                }
+                              }}
+                              role="button"
+                              tabIndex={0}
+                            >
+                              <X size={12} /> 取消
+                            </span>
+                          )}
+                          {canDelete && (
+                            <span
+                              className="task-delete-button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handleDeleteTask(task.id);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  handleDeleteTask(task.id);
+                                }
+                              }}
+                              role="button"
+                              tabIndex={0}
+                            >
+                              <X size={12} /> 删除
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <strong>{taskSummary}</strong>
+                      <p>{task.prompts[0] ?? '无提示词'}</p>
+                      <div className="task-card__meta">
+                        <span>{new Date(task.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
+                        <span>
+                          {task.status === 'running'
+                            ? `${task.progress.current}/${task.progress.total}`
+                            : `${successCount}/${task.resultImages.length || task.prompts.length}`}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </aside>
       </main>
     </div>
   );

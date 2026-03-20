@@ -31,6 +31,26 @@ export interface GeneratedImage {
   errorMessage?: string;
 }
 
+export type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface GenerationTask {
+  id: string;
+  createdAt: number;
+  status: TaskStatus;
+  mode: Mode;
+  gridCount: GridCount;
+  aspectRatio: AspectRatio;
+  resolution: Resolution;
+  prompts: string[];
+  payload: StoryboardPayload;
+  progress: {
+    current: number;
+    total: number;
+  };
+  resultImages: GeneratedImage[];
+  errorMessage?: string;
+}
+
 export interface WorkspaceState {
   mode: Mode;
   gridCount: GridCount;
