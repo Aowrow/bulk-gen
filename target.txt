@@ -1,0 +1,10 @@
+做一个将storyboard和banana-batch两个项目的功能合在一起的项目
+可以参考https://www.bulk-gen.com/app页面，前端页面可以照抄这个页面，并且实现它的所有功能模块
+它的三个主要功能solo 只生成一张图；combo 生成多宫格图，每一个格子写提示词，也就是storyboard生成json让如banana-batch中生成图片；gacha 就是每一格提示词都一样的combo
+既然你可以打开页面，那你可以每个主要功能都点击然后看看它的界面，因为有一些选项是只有点击相应功能才会出现的。我们实现的逻辑还是一样，solo直接使用nanobanana生成就可以了，gacha和combo，则使用输入的参数，拼接一个json文件，然后使用nanobanana生成即可
+至于grid几宫格；canvas ratio长宽比；resolution分辨率；reference images 参考图。都是nanobanana原本就支持的共嫩恶搞，banana-batch也有类似的实现
+
+还是老样子，做一个纯前端的调用api的页面就可以了，生图模块的样式布局尽量借鉴https://www.bulk-gen.com/app，不需要抄它的登录生成付费那一套，我们是自己使用的，但是网页用中文，apikey配置可以借鉴banan-batch两个项目的功能合在一起的项目
+操作过程包括设计思路，功能实现之类的都用md保存记录，方便后期维护
+
+功能全部实现后自我review一遍
